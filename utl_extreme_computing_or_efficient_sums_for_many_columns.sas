@@ -1,5 +1,24 @@
 Extreme computing or efficient sums for many columns ( 5 million rows and 40 columns )
 
+Thanks to Paul
+Datastep is now the fastest non in memory solution.
+(see Pauls comments on end of message)
+
+I ran these benchmarks on my Laptop  E6420 I7 with 8gb, 2 240gb SSDs (not Raid 0). SAS 9.4M2 64bit
+
+CORRECTIONS
+===========
+
+   My datasteps wrote 5,000,000 observations. Now outputs just one with 40 totals using Pauls algorithm
+   Also I did not need the first array statement in the datastep solutions
+   I also added keep bin_sum: to Pauls solution so that only 40 variables where output instead of 80
+
+   I think it is hard to multi-thread column sums.
+
+github
+https://goo.gl/iHrDSA
+https://github.com/rogerjdeangelis/utl_extreme_computing_or_efficient_sums_for_many_columns
+
   Sum down columns and output one observatiom with 40 sums
 
   Benchmarks (not scientific - your mileage may vary)
@@ -12,14 +31,15 @@ Extreme computing or efficient sums for many columns ( 5 million rows and 40 col
 
                With input/output ( basically no difference )
 
- 4.  3.45      SAS Summary
- 5.  3.45      WPS Summary
+ 4   3.12      SAS datastep Paul Dorfman
+ 5   4.17      WPS datastep Paul Dorfman
 
- 6.  4.61      WPS SQL  (passthru to exadate or teradata very fast?)
- 7.  5.51      SAS SQL  (passthru to exadate or teradata very fast?)
+ 6.  3.45      SAS Summary
+ 7.  3.45      WPS Summary
 
- 9.  9.42      WPS datastep
- 8. 10.17      SAS datastep
+ 8.  4.61      WPS SQL  (passthru to exadate or teradata very fast?)
+ 9.  5.51      SAS SQL  (passthru to exadate or teradata very fast?)
+
 
  Harder to multi-thread columns than rows, especially without a class or group variable.
 
@@ -143,7 +163,55 @@ PROCESS (All the code)
    */
 
 
-  4.  3.45      SAS Summary
+  4.  2.95  Pauls SAS datastep (no perm array - my array ends up shifting data around - data not contig?)
+
+    %macro sum ;
+      %do i = 1 %to 40 ;
+        bin_sum&i + bin&i ;
+      %end ;
+    %mend ;
+    data want_wps_datapaul;
+      do until (z) ;
+        set bin end = z ;
+        %sum
+      end ;
+      keep bin_sum:;
+      output ;
+    run ;quit;
+
+    NOTE: There were 5000000 observations read from the data set WORK.BIN.
+    NOTE: The data set WORK.WANT_WPS_DATAPAUL has 1 observations and 40 variables.
+    NOTE: DATA statement used (Total process time):
+          real time           2.95 seconds
+          cpu time            2.94 seconds
+
+  5.  4.17  Pauls WPS datastep (no perm array - my array ends up shifting data around - data not contig?)
+
+    %utl_submit_wps64('
+    libname wrk sas7bdat "%sysfunc(pathname(work))";
+    %macro sum ;
+      %do i = 1 %to 40 ;
+        bin_sum&i + bin&i ;
+      %end ;
+    %mend ;
+    data wrk.want_wps_datastep;
+      do until (z) ;
+        set wrk.bin end = z ;
+        %sum
+      end ;
+      keep bin_sum:;
+      output ;
+    run ;quit;
+    ');
+
+    NOTE: There were 5000000 observations read from the data set WORK.BIN.
+    NOTE: The data set WORK.WANT_DS has 1 observations and 40 variables.
+    NOTE: DATA statement used (Total process time):
+          real time           3.12 seconds
+          cpu time            3.13 seconds
+
+
+  6.  3.45      SAS Summary
   ==========================
 
    proc summary data=bin;
@@ -165,7 +233,7 @@ PROCESS (All the code)
    */
 
 
-  5.  3.90      WPS Summary (not exactly fair because I coverted SAS dataset to WPS dataset cacheing)
+  7.  3.90      WPS Summary (not exactly fair because I coverted SAS dataset to WPS dataset cacheing)
   ====================================================================================================
 
      %utl_submit_wps64('
@@ -192,7 +260,7 @@ PROCESS (All the code)
      */
 
 
-  6.  4.61      WPS SQL (not exactly fair because I coverted SAS dataset to WPS dataset cacheing)
+  8.  4.61      WPS SQL (not exactly fair because I coverted SAS dataset to WPS dataset cacheing)
   ===============================================================================================
 
     %utl_submit_wps64('
@@ -220,7 +288,7 @@ PROCESS (All the code)
           cpu time  : 4.524
     */
 
-  7.  5.36      SAS SQL
+  9.  5.36      SAS SQL
   =====================
 
     %utlnopts; * turn off all that macro generated code;
@@ -238,53 +306,66 @@ PROCESS (All the code)
     %utlopts; * turn macro generation on;
 
 
-  8.  9.42      WPS datastep
-  ===========================
-
-    %utl_submit_wps64('
-    libname wrk sas7bdat "%sysfunc(pathname(work))";
-    data wrk.want_wps_datastep;
-      set wrk.bin;
-      array bins[40]  bin1-bin40;
-      array binsums[40]  binsum1-binsum40;
-      %array(bins,values=1-40);
-      %do_over(bins,phrase=%str(colsum?+bin?;));
-      keep colsum:;
-    run;quit;
-    ');
-
-    NOTE: 5000000 observations were read from "WRK.bin"
-    NOTE: Data set "WORK.binwps" has 5000000 observation(s) and 40 variable(s)
-    NOTE: The data step took :
-      real time : 9.421
-      cpu time  : 6.754
+*                  _
+ _ __   __ _ _   _| |
+| '_ \ / _` | | | | |
+| |_) | (_| | |_| | |
+| .__/ \__,_|\__,_|_|
+|_|
+;
 
 
-  9.  10.17      SAS datastep
-  ==========================
+I've tested on the same machine under 9.3 and 9.4 (have no access to WPS and/or IML),
+and the results are all over the place.
+With 9.3, SUMMARY is (all in seconds) 7.33 vs
+DATA step at 5.63. With 9.4, SUMMARY is 3.63 vs DATA step at 5.24. However, I've
+also found that if you unroll the DO loop into separately compiled SUM statements, for example, via:
+
+%utl_submit_wps64('
+libname wrk sas7bdat "%sysfunc(pathname(work))";
+%macro sum ;
+  %do i = 1 %to 40 ;
+    bin_sum&i + bin&i ;
+  %end ;
+%mend ;
+data wrk.want_wps_datastep;
+  do until (z) ;
+    set wrk.bin end = z ;
+    %sum
+  end ;
+  output ;
+run ;quit;
+');
+
+NOTE: There were 5000000 observations read from the data set WORK.BIN.
+NOTE: The data set WORK.WANT_DS has 1 observations and 40 variables.
+NOTE: DATA statement used (Total process time):
+      real time           3.12 seconds
+      cpu time            3.13 seconds
 
 
-    %let beg %sysfunc(time());
-    data want;
-      set bin;
-      array bins[40]  bin1-bin40;
-      array binsums[40] binsum1-binsum40;
-      %array(bins,values=1-40);
-      %do_over(bins,phrase=%str(colsum?+bin?;));
-      keep colsum:;
-    run;quit;
-    %put %sysevalf(%sysfunc(time()) - &beg);
+then the DATA step comes on top in both 9.3 and 9.4 at 3.31 and 3.00, respectively,
+even with the SUMMARY multi-threading. This is easy to explain - the unrolling obviates
+the need to recompute the array addresses at run time for each observation, and the
+time needed to compile mere 40 SUM statements is totally inconsequential. (I recall
+resorting to the same trick for the same rea
+son using macros in PL/I - and practically the same syntax - good 40 years ago.)
 
-    NOTE: There were 5000000 observations read from the data set WORK.BIN.
-    NOTE: The data set WORK.WANT has 5000000 observations and 40 variables.
-    NOTE: DATA statement used (Total process time):
-          real time           10.17 seconds
-          user cpu time       4.05 seconds
-          system cpu time     3.22 seconds
-          memory              4569.00k
-          OS Memory           29532.00k
-          Timestamp           02/11/2018 07:07:12 PM
-          Step Count                        260  Switch Count  1
+Why the rest of the test results are so scattered across the methods and versions, I have no explanation.
+
+%macro sum ;
+  %do i = 1 %to 40 ;
+    bin_sum&i + bin&i ;
+  %end ;
+%mend ;
+data want_ds (keep = bin_sum:) ;
+  do until (z) ;
+    set bin end = z ;
+    %sum
+  end ;
+  output ;
+run ;
+
 
 
 
